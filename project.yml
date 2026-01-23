@@ -1,0 +1,61 @@
+name: wdk-starter-swift
+include:
+  - addons/addons.yml
+packages:
+  WdkSwiftCore:
+    url: https://github.com/claudiovb/wdk-swift-core
+    branch: v2
+  BareKit:
+    url: https://github.com/holepunchto/bare-kit-swift
+    branch: main
+targets:
+  wdk-starter-swift:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tether.wdk-starter-swift
+        SWIFT_VERSION: "5.0"
+        INFOPLIST_FILE: WdkStarterApp/Info.plist
+    info:
+      path: WdkStarterApp/Info.plist
+      properties:
+        CFBundleDisplayName: WDK Starter
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    entitlements:
+      path: WdkStarterApp/wdk-starter-swift.entitlements
+      properties:
+        com.apple.security.cs.allow-jit: true
+    dependencies:
+      - framework: frameworks/BareKit.xcframework
+      - package: WdkSwiftCore
+        product: WdkSwiftCore
+      - package: BareKit
+    sources:
+      - path: WdkStarterApp
+      - path: wdk-worklet.mobile.bundle
+        optional: true
+        buildPhase: resources
+    scheme:
+      preActions:
+        - name: Link Addons
+          script: |
+            PATH="${PATH}" "${PWD}/../wdk-swift-core/WorkletSource/pear-wrk-wdk-jsonrpc/node_modules/.bin/bare-link" \
+              --preset ios \
+              --out "${PWD}/addons" \
+              "${PWD}/../wdk-swift-core/WorkletSource/pear-wrk-wdk-jsonrpc"
+        - name: Pack Bundle
+          script: |
+            PATH="${PATH}" "${PWD}/../wdk-swift-core/WorkletSource/pear-wrk-wdk-jsonrpc/node_modules/.bin/bare-pack" \
+              --preset ios \
+              --base "${PWD}/../wdk-swift-core/WorkletSource/pear-wrk-wdk-jsonrpc" \
+              --imports "${PWD}/../wdk-swift-core/WorkletSource/pear-wrk-wdk-jsonrpc/pack.imports.json" \
+              --out "${PWD}/wdk-worklet.mobile.bundle" \
+              "${PWD}/../wdk-swift-core/WorkletSource/pear-wrk-wdk-jsonrpc/src/wdk-worklet.js"
