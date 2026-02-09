@@ -1,13 +1,24 @@
 name: wdk-starter-swift
+
+# =============================================================================
+# WDK Starter App
+#
+# Setup:
+#   1. Download prebuilds.zip + addons.zip from the latest release
+#   2. Unzip prebuilds.zip: BareKit.xcframework -> frameworks/, bundle -> project root
+#   3. Unzip addons.zip into addons/ directory
+#   4. Run: xcodegen generate
+#   5. Open and build
+# =============================================================================
+
 include:
   - addons/addons.yml
+
 packages:
   WdkSwiftCore:
     url: https://github.com/claudiovb/wdk-swift-core
     branch: v2
-  BareKit:
-    url: https://github.com/holepunchto/bare-kit-swift
-    branch: main
+
 targets:
   wdk-starter-swift:
     type: application
@@ -37,25 +48,8 @@ targets:
       - framework: frameworks/BareKit.xcframework
       - package: WdkSwiftCore
         product: WdkSwiftCore
-      - package: BareKit
     sources:
       - path: WdkStarterApp
       - path: wdk-worklet.mobile.bundle
         optional: true
         buildPhase: resources
-    scheme:
-      preActions:
-        - name: Link Addons
-          script: |
-            PATH="${PATH}" "${PWD}/../wdk-swift-core/WorkletSource/pear-wrk-wdk-jsonrpc/node_modules/.bin/bare-link" \
-              --preset ios \
-              --out "${PWD}/addons" \
-              "${PWD}/../wdk-swift-core/WorkletSource/pear-wrk-wdk-jsonrpc"
-        - name: Pack Bundle
-          script: |
-            PATH="${PATH}" "${PWD}/../wdk-swift-core/WorkletSource/pear-wrk-wdk-jsonrpc/node_modules/.bin/bare-pack" \
-              --preset ios \
-              --base "${PWD}/../wdk-swift-core/WorkletSource/pear-wrk-wdk-jsonrpc" \
-              --imports "${PWD}/../wdk-swift-core/WorkletSource/pear-wrk-wdk-jsonrpc/pack.imports.json" \
-              --out "${PWD}/wdk-worklet.mobile.bundle" \
-              "${PWD}/../wdk-swift-core/WorkletSource/pear-wrk-wdk-jsonrpc/src/wdk-worklet.js"
