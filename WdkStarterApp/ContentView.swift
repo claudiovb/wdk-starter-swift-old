@@ -1,180 +1,473 @@
 import SwiftUI
 import WdkSwiftCore
 
-struct ContentView: View {
-    @State private var status: String = "Ready to test WDK"
-    @State private var result: String = ""
-    @State private var isLoading: Bool = false
-    @State private var client: WdkSwiftCore? = nil
-    @State private var workletRunning: Bool = false
-    
-    var body: some View {
-        NavigationView {
-            VStack(spacing: 30) {
-                // Logo/Icon
-                Image(systemName: "key.fill")
-                    .resizable()
-                    .frame(width: 80, height: 80)
-                    .foregroundColor(.blue)
-                    .padding(.top, 40)
-                
-                // Title
-                Text("WDK Starter Swift")
-                    .font(.title)
-                    .fontWeight(.bold)
-                
-                // Status section
-                VStack(spacing: 15) {
-                    if isLoading {
-                        ProgressView()
-                            .scaleEffect(1.5)
-                    } else {
-                        Image(systemName: result.isEmpty ? "questionmark.circle" : (result.contains("Error") ? "xmark.circle.fill" : "checkmark.circle.fill"))
-                            .resizable()
-                            .frame(width: 50, height: 50)
-                            .foregroundColor(result.isEmpty ? .gray : (result.contains("Error") ? .red : .green))
-                    }
-                    
-                    Text(status)
-                        .font(.body)
-                        .multilineTextAlignment(.center)
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal)
-                    
-                    if !result.isEmpty {
-                        ScrollView {
-                            Text(result)
-                                .font(.caption)
-                                .multilineTextAlignment(.leading)
-                                .padding()
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color(.systemGray6))
-                                .cornerRadius(8)
-                        }
-                        .frame(maxHeight: 200)
-                    }
-                }
-                .padding()
-                .background(
-                    RoundedRectangle(cornerRadius: 15)
-                        .fill(Color(.systemBackground))
-                        .shadow(color: Color.black.opacity(0.1), radius: 10, x: 0, y: 5)
+// MARK: - Navigation
+
+enum Screen {
+    case welcome, create, importWallet, home, send, receive, sign
+}
+
+enum Network: String {
+    case btc, eth
+}
+
+// MARK: - View Model
+
+@MainActor
+class WalletViewModel: ObservableObject {
+    @Published var currentScreen: Screen = .welcome
+    @Published var seedPhrase: [String] = []
+    @Published var importWords: [String] = Array(repeating: "", count: 12)
+    @Published var importError: Bool = false
+    @Published var toastMessage: String?
+    @Published var toastIsSuccess: Bool = false
+    @Published var isLoading: Bool = false
+    @Published var statusText: String = ""
+
+    // Wallet state
+    @Published var ethAddress: String = ""
+    @Published var ethBalance: String = "0"
+    @Published var isWdkInitialized: Bool = false
+
+    // Send
+    @Published var sendNetwork: Network = .eth
+    @Published var sendAddress: String = ""
+    @Published var sendAmount: String = ""
+
+    // Receive
+    @Published var receiveNetwork: Network = .eth
+
+    // Sign
+    @Published var signNetwork: Network = .eth
+    @Published var signMessage: String = "Login to MyDApp\nTimestamp: 1711036800\nNonce: a3f8c2"
+
+    // WDK internals
+    private var client: WdkSwiftCore?
+    private var encryptionKey: String = ""
+    private var encryptedSeed: String = ""
+
+    private let wdkConfig = """
+    {
+      "networks": {
+        "ethereum": {
+          "chainId": 11155111,
+          "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com"
+        }
+      }
+    }
+    """
+
+    // MARK: - Navigation
+
+    func navigate(to screen: Screen) {
+        withAnimation(.easeInOut(duration: 0.25)) {
+            currentScreen = screen
+        }
+    }
+
+    // MARK: - Create Wallet
+
+    func createWallet() {
+        Task {
+            isLoading = true
+            statusText = "Generating seed phrase..."
+            do {
+                let wdk = getOrCreateClient()
+                let entropy = try await wdk.generateEntropyAndEncrypt(wordCount: 12)
+                encryptionKey = entropy.encryptionKey
+                encryptedSeed = entropy.encryptedSeedBuffer
+
+                let mnemonic = try await wdk.getMnemonicFromEntropy(
+                    encryptedEntropy: entropy.encryptedEntropyBuffer,
+                    encryptionKey: entropy.encryptionKey
                 )
-                .padding(.horizontal)
-                
-                // Test button
-                Button(action: {
-                    Task {
-                        await testWdk()
-                    }
-                }) {
-                    HStack {
-                        Image(systemName: "play.fill")
-                        Text("Test WDK")
-                    }
-                    .font(.headline)
-                    .foregroundColor(.white)
-                    .padding()
-                    .frame(maxWidth: .infinity)
-                    .background(Color.blue)
-                    .cornerRadius(10)
-                }
-                .padding(.horizontal)
-                .disabled(isLoading)
-
-                // Terminate button - tests graceful shutdown
-                Button(action: {
-                    Task {
-                        await terminateWorklet()
-                    }
-                }) {
-                    HStack {
-                        Image(systemName: "stop.fill")
-                        Text("Terminate Worklet")
-                    }
-                    .font(.headline)
-                    .foregroundColor(.white)
-                    .padding()
-                    .frame(maxWidth: .infinity)
-                    .background(workletRunning ? Color.red : Color.gray)
-                    .cornerRadius(10)
-                }
-                .padding(.horizontal)
-                .disabled(!workletRunning || isLoading)
-                
-                Spacer()
-                
-                // Footer
-                Text("WDK Swift Core Demo")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
-                    .padding(.bottom, 20)
+                seedPhrase = mnemonic.split(separator: " ").map(String.init)
+                statusText = ""
+                isLoading = false
+                navigate(to: .create)
+            } catch {
+                isLoading = false
+                statusText = ""
+                showToast("Error: \(error.localizedDescription)")
             }
-            .navigationBarHidden(true)
         }
     }
-    
-    func testWdk() async {
-        isLoading = true
-        status = "Testing WDK..."
-        result = ""
 
+    func confirmSeedAndInitialize() {
+        Task {
+            isLoading = true
+            statusText = "Initializing wallet..."
+            do {
+                let wdk = getOrCreateClient()
+                try await wdk.initializeWDK(
+                    encryptionKey: encryptionKey,
+                    encryptedSeed: encryptedSeed,
+                    config: wdkConfig
+                )
+                isWdkInitialized = true
+
+                ethAddress = try await wdk.getAddress(network: "ethereum")
+
+                isLoading = false
+                statusText = ""
+                navigate(to: .home)
+                try? await fetchBalance()
+            } catch {
+                isLoading = false
+                statusText = ""
+                showToast("Error: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Import Wallet
+
+    func doImport() {
+        let words = importWords.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+        let filled = words.filter { !$0.isEmpty }
+        if filled.count < 12 {
+            importError = true
+            return
+        }
+        importError = false
+
+        let mnemonic = words.joined(separator: " ")
+        Task {
+            isLoading = true
+            statusText = "Importing wallet..."
+            do {
+                let wdk = getOrCreateClient()
+                let result = try await wdk.getSeedAndEntropyFromMnemonic(mnemonic: mnemonic)
+                encryptionKey = result.encryptionKey
+                encryptedSeed = result.encryptedSeedBuffer
+
+                try await wdk.initializeWDK(
+                    encryptionKey: encryptionKey,
+                    encryptedSeed: encryptedSeed,
+                    config: wdkConfig
+                )
+                isWdkInitialized = true
+
+                ethAddress = try await wdk.getAddress(network: "ethereum")
+
+                isLoading = false
+                statusText = ""
+                navigate(to: .home)
+                try? await fetchBalance()
+            } catch {
+                isLoading = false
+                statusText = ""
+                showToast("Import failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Balance
+
+    func fetchBalance() async throws {
+        guard isWdkInitialized, let wdk = client else { return }
         do {
-            // Initialize client (reuse or create new)
-            if client == nil {
-                client = WdkSwiftCore()
-            }
-
-            guard let client = client else { return }
-
-            // Test 1: Start worklet
-            status = "Starting worklet..."
-            try await client.workletStart()
-            result += "✅ Worklet started\n"
-            workletRunning = true
-
-            // Test 2: Generate entropy
-            status = "Generating entropy..."
-            let entropy = try await client.generateEntropyAndEncrypt(wordCount: 12)
-            result += "✅ Entropy generated\n"
-            result += "Key: \(entropy.encryptionKey.prefix(20))...\n"
-            result += "Seed: \(entropy.encryptedSeedBuffer.prefix(20))...\n"
-
-            // Test 3: Get mnemonic
-            status = "Getting mnemonic..."
-            let mnemonic = try await client.getMnemonicFromEntropy(
-                encryptedEntropy: entropy.encryptedEntropyBuffer,
-                encryptionKey: entropy.encryptionKey
-            )
-            result += "✅ Mnemonic retrieved\n"
-            result += "Words: \(mnemonic.split(separator: " ").prefix(3).joined(separator: " "))...\n"
-
-            status = "✅ All tests passed! Tap Terminate to test graceful shutdown."
-            isLoading = false
-
+            let balance = try await wdk.getBalance(network: "ethereum")
+            ethBalance = balance
         } catch {
-            result = "❌ Error: \(error.localizedDescription)"
-            status = "Test failed"
-            isLoading = false
+            print("Balance fetch failed: \(error)")
         }
     }
 
-    func terminateWorklet() async {
-        isLoading = true
-        status = "Terminating worklet..."
+    func refreshBalance() {
+        Task {
+            try? await fetchBalance()
+        }
+    }
 
-        // Release the client — its deinit calls worklet.terminate()
-        // Before our fix, this would call C abort() and crash the app.
-        // Now, Bare.on('uncaughtException') catches the termination signal gracefully.
-        client = nil
-        workletRunning = false
+    // MARK: - Send (placeholder — wired for UI flow)
 
-        // Give the runtime a moment to clean up
-        try? await Task.sleep(nanoseconds: 500_000_000)
+    func doSend() {
+        guard !sendAddress.isEmpty, !sendAmount.isEmpty else {
+            showToast("Please fill in address and amount")
+            return
+        }
+        // TODO: Wire to actual callMethod for sendTransaction
+        navigate(to: .home)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            self.showToast("Send not yet implemented — coming soon")
+        }
+    }
 
-        result += "\n✅ Worklet terminated — app still alive!\n"
-        status = "✅ Worklet terminated gracefully"
-        isLoading = false
+    // MARK: - Sign (placeholder)
+
+    func doSign() {
+        guard !signMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        // TODO: Wire to actual callMethod for signMessage
+        navigate(to: .home)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            self.showToast("Sign not yet implemented — coming soon")
+        }
+    }
+
+    // MARK: - Helpers
+
+    func showToast(_ message: String, success: Bool = false) {
+        toastMessage = message
+        toastIsSuccess = success
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            if self.toastMessage == message {
+                self.toastMessage = nil
+            }
+        }
+    }
+
+    private func getOrCreateClient() -> WdkSwiftCore {
+        if let existing = client { return existing }
+        let wdk = WdkSwiftCore()
+        client = wdk
+        return wdk
+    }
+
+    var receiveAddress: String {
+        receiveNetwork == .eth ? ethAddress : "BTC not configured"
+    }
+
+    var receiveLabel: String {
+        receiveNetwork == .eth ? "Your Ethereum Sepolia address" : "BTC not available"
+    }
+
+    var sendFee: String {
+        sendNetwork == .eth ? "~0.002 ETH" : "~0.00001 BTC"
+    }
+
+    var sendNetworkLabel: String {
+        sendNetwork == .eth ? "Ethereum Sepolia" : "Bitcoin Testnet"
+    }
+
+    var sendTokenLabel: String {
+        sendNetwork == .eth ? "ETH" : "BTC"
+    }
+
+    var formattedEthBalance: String {
+        // ethBalance is in wei (raw string) — convert to ETH
+        if let wei = Double(ethBalance) {
+            let eth = wei / 1_000_000_000_000_000_000
+            if eth == 0 { return "0.0000 ETH" }
+            return String(format: "%.4f ETH", eth)
+        }
+        return "\(ethBalance) ETH"
+    }
+}
+
+// MARK: - Root View
+
+struct ContentView: View {
+    @StateObject private var vm = WalletViewModel()
+
+    var body: some View {
+        ZStack {
+            Color(.systemBackground).ignoresSafeArea()
+
+            Group {
+                switch vm.currentScreen {
+                case .welcome:      WelcomeScreen(vm: vm)
+                case .create:       CreateWalletScreen(vm: vm)
+                case .importWallet: ImportWalletScreen(vm: vm)
+                case .home:         HomeScreen(vm: vm)
+                case .send:         SendScreen(vm: vm)
+                case .receive:      ReceiveScreen(vm: vm)
+                case .sign:         SignMessageScreen(vm: vm)
+                }
+            }
+
+            // Loading overlay
+            if vm.isLoading {
+                Color.black.opacity(0.3).ignoresSafeArea()
+                VStack(spacing: 16) {
+                    ProgressView()
+                        .scaleEffect(1.5)
+                        .tint(.white)
+                    if !vm.statusText.isEmpty {
+                        Text(vm.statusText)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                    }
+                }
+                .padding(32)
+                .background(.ultraThinMaterial)
+                .cornerRadius(16)
+            }
+
+            // Toast overlay
+            if let msg = vm.toastMessage {
+                VStack {
+                    Text(msg)
+                        .font(.subheadline).fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(vm.toastIsSuccess ? Color.green : Color.accentColor)
+                        )
+                        .padding(.horizontal, 20)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    Spacer()
+                }
+                .padding(.top, 8)
+                .animation(.easeOut(duration: 0.3), value: vm.toastMessage != nil)
+            }
+        }
+    }
+}
+
+// MARK: - Reusable Components
+
+struct ScreenHeader: View {
+    let title: String
+    let onBack: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onBack) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .frame(width: 34, height: 34)
+                    .background(Circle().stroke(Color(.separator), lineWidth: 1))
+            }
+            Text(title)
+                .font(.system(size: 16, weight: .bold))
+            Spacer()
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
+    }
+}
+
+struct NetworkPill: View {
+    let label: String
+    let icon: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Text(icon)
+                Text(label)
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 20)
+                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(.secondarySystemBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(isSelected ? Color.accentColor : Color(.separator), lineWidth: 1)
+            )
+            .foregroundColor(isSelected ? .accentColor : .secondary)
+        }
+    }
+}
+
+struct TestnetBadge: View {
+    var body: some View {
+        Text("Testnet")
+            .font(.system(size: 11, weight: .bold))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background(Color.orange.opacity(0.15))
+            .foregroundColor(.orange)
+            .cornerRadius(6)
+    }
+}
+
+struct PrimaryButton: View {
+    let title: String
+    var disabled: Bool = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 15)
+                .background(RoundedRectangle(cornerRadius: 12).fill(disabled ? Color.gray : Color.accentColor))
+        }
+        .disabled(disabled)
+    }
+}
+
+struct OutlineButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 15, weight: .bold))
+                .foregroundColor(.accentColor)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 15)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.accentColor, lineWidth: 2)
+                )
+        }
+    }
+}
+
+struct SeedWordCell: View {
+    let index: Int
+    let word: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("\(index)")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.secondary)
+                .frame(minWidth: 18, alignment: .leading)
+            Text(word)
+                .font(.system(size: 13, weight: .medium))
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color(.separator), lineWidth: 1)
+        )
+    }
+}
+
+struct SeedInputCell: View {
+    let index: Int
+    @Binding var word: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("\(index)")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.secondary)
+                .frame(minWidth: 18, alignment: .leading)
+            TextField("word", text: $word)
+                .font(.system(size: 13))
+                .autocapitalization(.none)
+                .disableAutocorrection(true)
+        }
+        .padding(10)
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color(.separator), lineWidth: 1)
+        )
     }
 }
 
