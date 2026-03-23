@@ -42,6 +42,8 @@ class WalletViewModel: ObservableObject {
     // Sign
     @Published var signNetwork: Network = .eth
     @Published var signMessage: String = "Login to MyDApp\nTimestamp: 1711036800\nNonce: a3f8c2"
+    @Published var signResult: String?
+    @Published var verifyResult: Bool?
 
     // WDK internals
     private var client: WdkSwiftCore?
@@ -218,14 +220,116 @@ class WalletViewModel: ObservableObject {
         }
     }
 
-    // MARK: - Sign (placeholder)
+    // MARK: - Sign
+
+    private func jsonEncodeString(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\t", with: "\\t")
+        return "\"\(escaped)\""
+    }
 
     func doSign() {
-        guard !signMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        // TODO: Wire to actual callMethod for signMessage
-        navigate(to: .home)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            self.showToast("Sign not yet implemented — coming soon")
+        let message = signMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else { return }
+        guard isWdkInitialized, let wdk = client else {
+            showToast("Wallet not initialized")
+            return
+        }
+        verifyResult = nil
+
+        let network = signNetwork == .eth ? "sepolia" : "bitcoin"
+        Task {
+            isLoading = true
+            statusText = "Signing message..."
+            do {
+                let result = try await wdk.callMethod(
+                    methodName: "sign",
+                    network: network,
+                    accountIndex: 0,
+                    args: jsonEncodeString(message),
+                    options: nil
+                )
+                signResult = "\(result)"
+                navigate(to: .sign)
+                isLoading = false
+                statusText = ""
+                showToast("Message signed successfully", success: true)
+            } catch {
+                isLoading = false
+                statusText = ""
+                showToast("Sign failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Verify
+
+    func doVerify() {
+        guard let signature = signResult else { return }
+        let message = signMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else { return }
+        guard isWdkInitialized, let wdk = client else {
+            showToast("Wallet not initialized")
+            return
+        }
+
+        let network = signNetwork == .eth ? "sepolia" : "bitcoin"
+        Task {
+            isLoading = true
+            statusText = "Verifying signature..."
+            do {
+                let argsArray = try JSONSerialization.data(withJSONObject: [message, signature])
+                let argsJson = String(data: argsArray, encoding: .utf8)!
+                let result = try await wdk.callMethod(
+                    methodName: "verify",
+                    network: network,
+                    accountIndex: 0,
+                    args: argsJson,
+                    options: nil
+                )
+                if let valid = result as? Bool {
+                    verifyResult = valid
+                } else {
+                    verifyResult = "\(result)" == "true" || "\(result)" == "1"
+                }
+                isLoading = false
+                statusText = ""
+                showToast(verifyResult == true ? "Signature is valid" : "Signature is invalid",
+                          success: verifyResult == true)
+            } catch {
+                verifyResult = false
+                isLoading = false
+                statusText = ""
+                showToast("Verify failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Delete Wallet
+
+    func deleteWallet() {
+        Task {
+            if let wdk = client {
+                try? await wdk.dispose()
+            }
+            client = nil
+            isWdkInitialized = false
+            encryptionKey = ""
+            encryptedSeed = ""
+            ethAddress = ""
+            ethBalance = "0"
+            btcAddress = ""
+            btcBalance = "0"
+            seedPhrase = []
+            importWords = Array(repeating: "", count: 12)
+            importError = false
+            signResult = nil
+            navigate(to: .welcome)
+            showToast("Wallet deleted", success: false)
         }
     }
 

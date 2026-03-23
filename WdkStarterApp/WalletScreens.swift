@@ -225,6 +225,8 @@ struct HomeScreen: View {
                 ActionCard(icon: "pencil", label: "Sign") {
                     vm.signNetwork = .eth
                     vm.signMessage = "Login to MyDApp\nTimestamp: 1711036800\nNonce: a3f8c2"
+                    vm.signResult = nil
+                    vm.verifyResult = nil
                     vm.navigate(to: .sign)
                 }
             }
@@ -261,6 +263,25 @@ struct HomeScreen: View {
             .padding(.top, 4)
 
             Spacer()
+
+            Button(action: { vm.deleteWallet() }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .semibold))
+                    Text("Delete wallet")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundColor(.red)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(Color.red.opacity(0.08))
+                .cornerRadius(10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.red.opacity(0.3), lineWidth: 1)
+                )
+            }
+            .padding(.bottom, 12)
 
             // Tab bar
             HStack {
@@ -593,6 +614,63 @@ struct SignMessageScreen: View {
                     .stroke(Color(.separator), lineWidth: 1)
             )
             .padding(.horizontal, 20)
+
+            if let signature = vm.signResult {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("Signature")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Button("Copy") {
+                            UIPasteboard.general.string = signature
+                            vm.showToast("Signature copied", success: true)
+                        }
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.accentColor)
+                    }
+                    Text(signature)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.primary)
+                        .lineLimit(nil)
+                        .textSelection(.enabled)
+                }
+                .padding(14)
+                .background(Color.green.opacity(0.06))
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.green.opacity(0.3), lineWidth: 1)
+                )
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+
+                Button(action: { vm.doVerify() }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: vm.verifyResult == nil ? "checkmark.shield" :
+                                vm.verifyResult == true ? "checkmark.shield.fill" : "xmark.shield.fill")
+                        Text(vm.verifyResult == nil ? "Verify signature" :
+                                vm.verifyResult == true ? "Verified" : "Invalid")
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(vm.verifyResult == nil ? .accentColor :
+                                        vm.verifyResult == true ? .green : .red)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(vm.verifyResult == nil ? Color.accentColor.opacity(0.08) :
+                                    vm.verifyResult == true ? Color.green.opacity(0.08) : Color.red.opacity(0.08))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(vm.verifyResult == nil ? Color.accentColor.opacity(0.3) :
+                                        vm.verifyResult == true ? Color.green.opacity(0.3) : Color.red.opacity(0.3), lineWidth: 1)
+                    )
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 4)
+            }
 
             Spacer()
 
