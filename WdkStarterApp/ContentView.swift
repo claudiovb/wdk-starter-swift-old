@@ -27,6 +27,8 @@ class WalletViewModel: ObservableObject {
     // Wallet state
     @Published var ethAddress: String = ""
     @Published var ethBalance: String = "0"
+    @Published var btcAddress: String = ""
+    @Published var btcBalance: String = "0"
     @Published var isWdkInitialized: Bool = false
 
     // Send
@@ -49,9 +51,17 @@ class WalletViewModel: ObservableObject {
     private let wdkConfig = """
     {
       "networks": {
-        "ethereum": {
-          "chainId": 11155111,
-          "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com"
+        "sepolia": {
+            "provider": "https://ethereum-sepolia-rpc.publicnode.com"
+        },
+        "bitcoin": {
+          "client": {
+            "type": "blockbook-http",
+            "clientConfig": {
+              "url": "https://blockbook.tbtc-1.zelcore.io/api"
+            }
+          },
+          "network": "testnet"
         }
       }
     }
@@ -82,9 +92,9 @@ class WalletViewModel: ObservableObject {
                     encryptionKey: entropy.encryptionKey
                 )
                 seedPhrase = mnemonic.split(separator: " ").map(String.init)
-                statusText = ""
-                isLoading = false
                 navigate(to: .create)
+                isLoading = false
+                statusText = ""
             } catch {
                 isLoading = false
                 statusText = ""
@@ -97,26 +107,30 @@ class WalletViewModel: ObservableObject {
         Task {
             isLoading = true
             statusText = "Initializing wallet..."
+
+            let wdk = getOrCreateClient()
             do {
-                let wdk = getOrCreateClient()
                 try await wdk.initializeWDK(
                     encryptionKey: encryptionKey,
                     encryptedSeed: encryptedSeed,
                     config: wdkConfig
                 )
                 isWdkInitialized = true
-
-                ethAddress = try await wdk.getAddress(network: "ethereum")
-
-                isLoading = false
-                statusText = ""
-                navigate(to: .home)
-                try? await fetchBalance()
             } catch {
-                isLoading = false
-                statusText = ""
-                showToast("Error: \(error.localizedDescription)")
+                showToast("WDK init failed: \(error.localizedDescription)")
             }
+
+            if let eth = try? await wdk.getAddress(network: "sepolia") {
+                ethAddress = eth
+            }
+            if let btc = try? await wdk.getAddress(network: "bitcoin") {
+                btcAddress = btc
+            }
+
+            navigate(to: .home)
+            isLoading = false
+            statusText = ""
+            try? await fetchBalance()
         }
     }
 
@@ -135,8 +149,9 @@ class WalletViewModel: ObservableObject {
         Task {
             isLoading = true
             statusText = "Importing wallet..."
+
+            let wdk = getOrCreateClient()
             do {
-                let wdk = getOrCreateClient()
                 let result = try await wdk.getSeedAndEntropyFromMnemonic(mnemonic: mnemonic)
                 encryptionKey = result.encryptionKey
                 encryptedSeed = result.encryptedSeedBuffer
@@ -147,18 +162,21 @@ class WalletViewModel: ObservableObject {
                     config: wdkConfig
                 )
                 isWdkInitialized = true
-
-                ethAddress = try await wdk.getAddress(network: "ethereum")
-
-                isLoading = false
-                statusText = ""
-                navigate(to: .home)
-                try? await fetchBalance()
             } catch {
-                isLoading = false
-                statusText = ""
                 showToast("Import failed: \(error.localizedDescription)")
             }
+
+            if let eth = try? await wdk.getAddress(network: "sepolia") {
+                ethAddress = eth
+            }
+            if let btc = try? await wdk.getAddress(network: "bitcoin") {
+                btcAddress = btc
+            }
+
+            navigate(to: .home)
+            isLoading = false
+            statusText = ""
+            try? await fetchBalance()
         }
     }
 
@@ -167,10 +185,16 @@ class WalletViewModel: ObservableObject {
     func fetchBalance() async throws {
         guard isWdkInitialized, let wdk = client else { return }
         do {
-            let balance = try await wdk.getBalance(network: "ethereum")
+            let balance = try await wdk.getBalance(network: "sepolia")
             ethBalance = balance
         } catch {
-            print("Balance fetch failed: \(error)")
+            print("ETH balance fetch failed: \(error)")
+        }
+        do {
+            let balance = try await wdk.getBalance(network: "bitcoin")
+            btcBalance = balance
+        } catch {
+            print("BTC balance fetch failed: \(error)")
         }
     }
 
@@ -225,11 +249,11 @@ class WalletViewModel: ObservableObject {
     }
 
     var receiveAddress: String {
-        receiveNetwork == .eth ? ethAddress : "BTC not configured"
+        receiveNetwork == .eth ? ethAddress : btcAddress
     }
 
     var receiveLabel: String {
-        receiveNetwork == .eth ? "Your Ethereum Sepolia address" : "BTC not available"
+        receiveNetwork == .eth ? "Your Ethereum Sepolia address" : "Your Bitcoin Testnet address"
     }
 
     var sendFee: String {
@@ -245,13 +269,21 @@ class WalletViewModel: ObservableObject {
     }
 
     var formattedEthBalance: String {
-        // ethBalance is in wei (raw string) — convert to ETH
         if let wei = Double(ethBalance) {
             let eth = wei / 1_000_000_000_000_000_000
             if eth == 0 { return "0.0000 ETH" }
             return String(format: "%.4f ETH", eth)
         }
         return "\(ethBalance) ETH"
+    }
+
+    var formattedBtcBalance: String {
+        if let satoshis = Double(btcBalance) {
+            let btc = satoshis / 100_000_000
+            if btc == 0 { return "0.0000 BTC" }
+            return String(format: "%.4f BTC", btc)
+        }
+        return "\(btcBalance) BTC"
     }
 }
 

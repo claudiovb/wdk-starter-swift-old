@@ -184,17 +184,27 @@ struct HomeScreen: View {
             .padding(.vertical, 14)
 
             // Balance hero
-            VStack(spacing: 4) {
-                Text("Total balance")
+            VStack(spacing: 8) {
+                Text("Balances")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundColor(.secondary)
                 Text(vm.formattedEthBalance)
-                    .font(.system(size: 36, weight: .bold))
+                    .font(.system(size: 30, weight: .bold))
                     .tracking(-1)
-                if !vm.ethAddress.isEmpty {
-                    Text(String(vm.ethAddress.prefix(6)) + "..." + String(vm.ethAddress.suffix(4)))
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(.secondary)
+                Text(vm.formattedBtcBalance)
+                    .font(.system(size: 30, weight: .bold))
+                    .tracking(-1)
+                VStack(spacing: 2) {
+                    if !vm.ethAddress.isEmpty {
+                        Text("ETH " + String(vm.ethAddress.prefix(6)) + "..." + String(vm.ethAddress.suffix(4)))
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                    if !vm.btcAddress.isEmpty {
+                        Text("BTC " + String(vm.btcAddress.prefix(6)) + "..." + String(vm.btcAddress.suffix(4)))
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
             .padding(.vertical, 24)
@@ -234,7 +244,7 @@ struct HomeScreen: View {
                     VStack(spacing: 0) {
                         AssetRow(icon: "bitcoinsign.circle.fill", iconColor: Color(hex: 0xF7931A),
                                  name: "Bitcoin", network: "BTC Testnet",
-                                 amount: "0.0000 BTC", usd: "$0.00")
+                                 amount: vm.formattedBtcBalance, usd: "$0.00")
                         AssetRow(icon: "diamond.fill", iconColor: Color(hex: 0x627EEA),
                                  name: "Ethereum", network: "Sepolia",
                                  amount: vm.formattedEthBalance, usd: "$0.00")
