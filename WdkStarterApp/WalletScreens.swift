@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreImage.CIFilterBuiltins
 
 // MARK: - Welcome Screen
 
@@ -10,12 +11,10 @@ struct WelcomeScreen: View {
             Spacer()
 
             VStack(spacing: 6) {
-                // Logo placeholder — replace with actual WDK logo asset later
-                Image(systemName: "shield.checkered")
+                Image("WDKLogo")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 64, height: 64)
-                    .foregroundColor(.orange)
+                    .frame(height: 80)
                     .padding(.bottom, 16)
 
                 Text("WDK Wallet")
@@ -137,17 +136,31 @@ struct ImportWalletScreen: View {
             }
             .padding(.horizontal, 20)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Type each word into its numbered slot.")
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
+            HStack(spacing: 12) {
                 if vm.importError {
                     Text("Please enter all 12 words to continue.")
                         .font(.system(size: 12))
                         .foregroundColor(.red)
+                } else {
+                    Text("Type each word or paste from clipboard.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
                 }
+                Spacer()
+                Button("Paste") {
+                    if let clip = UIPasteboard.general.string {
+                        let words = clip.trimmingCharacters(in: .whitespacesAndNewlines)
+                            .split(separator: " ")
+                            .map(String.init)
+                        for i in 0..<min(words.count, 12) {
+                            vm.importWords[i] = words[i].lowercased()
+                        }
+                        vm.importError = false
+                    }
+                }
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(.accentColor)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 20)
             .padding(.top, 4)
 
@@ -166,14 +179,16 @@ struct ImportWalletScreen: View {
 
 struct HomeScreen: View {
     @ObservedObject var vm: WalletViewModel
+    let refreshTimer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Image(systemName: "shield.checkered")
-                    .foregroundColor(.orange)
-                    .font(.system(size: 20))
+                Image("WDKLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(height: 24)
                 Text("WDK Wallet")
                     .font(.system(size: 16, weight: .bold))
                     .tracking(0.3)
@@ -216,6 +231,7 @@ struct HomeScreen: View {
                     vm.sendAddress = ""
                     vm.sendAmount = ""
                     vm.sendNetwork = .eth
+                    vm.fetchFeeQuotes()
                     vm.navigate(to: .send)
                 }
                 ActionCard(icon: "arrow.down", label: "Receive") {
@@ -300,6 +316,8 @@ struct HomeScreen: View {
             .padding(.vertical, 10)
             .overlay(alignment: .top) { Divider() }
         }
+        .onAppear { vm.refreshBalance() }
+        .onReceive(refreshTimer) { _ in vm.refreshBalance() }
     }
 }
 
@@ -385,103 +403,234 @@ struct SendScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             ScreenHeader(title: "Send") {
+                vm.clearCompletedTransactions()
                 vm.navigate(to: .home)
             }
 
-            Text("Select network and enter details.")
-                .font(.system(size: 13))
-                .foregroundColor(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
+            ScrollView {
+                VStack(spacing: 0) {
+                    Text("Select network and enter details.")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
 
-            // Network pills
-            HStack(spacing: 8) {
-                NetworkPill(label: "Sepolia", icon: "\u{039E}", isSelected: vm.sendNetwork == .eth) {
-                    vm.sendNetwork = .eth
-                }
-                NetworkPill(label: "BTC Testnet", icon: "\u{20BF}", isSelected: vm.sendNetwork == .btc) {
-                    vm.sendNetwork = .btc
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 16)
+                    // Network pills
+                    HStack(spacing: 8) {
+                        NetworkPill(label: "Sepolia", icon: "\u{039E}", isSelected: vm.sendNetwork == .eth) {
+                            vm.sendNetwork = .eth
+                        }
+                        NetworkPill(label: "BTC Testnet", icon: "\u{20BF}", isSelected: vm.sendNetwork == .btc) {
+                            vm.sendNetwork = .btc
+                        }
+                        Spacer()
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 16)
 
-            // Address field
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Recipient address")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.secondary)
-                TextField("Enter wallet address...", text: $vm.sendAddress)
-                    .font(.system(size: 14))
-                    .padding(13)
+                    // Address field
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Recipient address")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        TextField("Enter wallet address...", text: $vm.sendAddress)
+                            .font(.system(size: 14))
+                            .padding(13)
+                            .background(Color(.secondarySystemBackground))
+                            .cornerRadius(10)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(Color(.separator), lineWidth: 1)
+                            )
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 14)
+
+                    // Amount input
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Amount")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.secondary)
+                        TextField("0.00", text: $vm.sendAmount)
+                            .font(.system(size: 28, weight: .bold))
+                            .keyboardType(.decimalPad)
+                        HStack {
+                            Text(vm.sendTokenLabel)
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                            Spacer()
+                    Button("Max") {
+                        vm.sendAmount = vm.maxSendAmount
+                    }
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.accentColor)
+                        }
+                        .padding(.top, 2)
+                    }
+                    .padding(16)
                     .background(Color(.secondarySystemBackground))
-                    .cornerRadius(10)
+                    .cornerRadius(12)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10)
+                        RoundedRectangle(cornerRadius: 12)
                             .stroke(Color(.separator), lineWidth: 1)
                     )
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 14)
+                    .padding(.horizontal, 20)
 
-            // Amount input
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Amount")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.secondary)
-                TextField("0.00", text: $vm.sendAmount)
-                    .font(.system(size: 28, weight: .bold))
-                    .keyboardType(.decimalPad)
-                HStack {
-                    Text(vm.sendTokenLabel)
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    Button("Max") {
-                        vm.sendAmount = "0.0000"
+                    // Fee info
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text("Estimated fee").font(.system(size: 13)).foregroundColor(.secondary)
+                            Spacer()
+                            Text(vm.sendFee).font(.system(size: 13, weight: .semibold))
+                        }
+                        .padding(.vertical, 8)
+                        Divider()
+                        HStack {
+                            Text("Network").font(.system(size: 13)).foregroundColor(.secondary)
+                            Spacer()
+                            Text(vm.sendNetworkLabel).font(.system(size: 13, weight: .semibold))
+                        }
+                        .padding(.vertical, 8)
                     }
-                    .font(.system(size: 12, weight: .bold))
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+
+                    // Send button
+                    PrimaryButton(title: "Send") {
+                        vm.doSend()
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 20)
+
+                    // Pending / completed transactions
+                    if !vm.pendingTransactions.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("TRANSACTIONS")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(.secondary)
+                                .tracking(0.5)
+
+                            ForEach(vm.pendingTransactions.reversed()) { tx in
+                                TxCard(tx: tx, vm: vm)
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 20)
+                    }
+
+                    Spacer().frame(height: 24)
+                }
+            }
+        }
+    }
+}
+
+struct TxCard: View {
+    let tx: PendingTx
+    @ObservedObject var vm: WalletViewModel
+
+    private var isPending: Bool {
+        if case .pending = tx.status { return true }
+        return false
+    }
+
+    private var txHash: String? {
+        if case .completed(let hash) = tx.status { return hash }
+        return nil
+    }
+
+    private var cardColor: Color {
+        switch tx.status {
+        case .pending: return .orange
+        case .completed: return .green
+        case .failed: return .red
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            statusRow
+            detailRow
+            if let hash = txHash {
+                hashSection(hash: hash)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardColor.opacity(0.06))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(cardColor.opacity(0.25), lineWidth: 1)
+        )
+    }
+
+    private var statusRow: some View {
+        HStack {
+            if isPending {
+                ProgressView()
+                    .scaleEffect(0.7)
+                    .frame(width: 16, height: 16)
+            } else {
+                Image(systemName: txHash != nil ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundColor(cardColor)
+                    .font(.system(size: 14))
+            }
+            Text(tx.statusLabel)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(cardColor)
+            Spacer()
+            Text(tx.network == .eth ? "ETH" : "BTC")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private var detailRow: some View {
+        HStack(spacing: 4) {
+            Text(tx.amount)
+                .font(.system(size: 12, weight: .semibold))
+            Text("to")
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+            Text(String(tx.toAddress.prefix(8)) + "..." + String(tx.toAddress.suffix(4)))
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundColor(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func hashSection(hash: String) -> some View {
+        Text(hash)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundColor(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+
+        HStack(spacing: 12) {
+            Button(action: {
+                UIPasteboard.general.string = hash
+                vm.showToast("Tx hash copied", success: true)
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "doc.on.doc")
+                    Text("Copy")
+                }
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(.accentColor)
+            }
+
+            if let url = tx.explorerURL {
+                Link(destination: url) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.up.right.square")
+                        Text("Explorer")
+                    }
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.accentColor)
                 }
-                .padding(.top, 2)
             }
-            .padding(16)
-            .background(Color(.secondarySystemBackground))
-            .cornerRadius(12)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color(.separator), lineWidth: 1)
-            )
-            .padding(.horizontal, 20)
-
-            // Fee info
-            VStack(spacing: 0) {
-                HStack {
-                    Text("Estimated fee").font(.system(size: 13)).foregroundColor(.secondary)
-                    Spacer()
-                    Text(vm.sendFee).font(.system(size: 13, weight: .semibold))
-                }
-                .padding(.vertical, 8)
-                Divider()
-                HStack {
-                    Text("Network").font(.system(size: 13)).foregroundColor(.secondary)
-                    Spacer()
-                    Text(vm.sendNetworkLabel).font(.system(size: 13, weight: .semibold))
-                }
-                .padding(.vertical, 8)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
-
-            Spacer()
-
-            PrimaryButton(title: "Review and send") {
-                vm.doSend()
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 24)
         }
     }
 }
@@ -509,21 +658,13 @@ struct ReceiveScreen: View {
             .padding(.top, 8)
             .padding(.bottom, 16)
 
-            // QR placeholder
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(.secondarySystemBackground))
+            QRCodeView(content: vm.receiveAddress)
+                .frame(width: 200, height: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
                 .overlay(
                     RoundedRectangle(cornerRadius: 16)
                         .stroke(Color(.separator), lineWidth: 1)
                 )
-                .overlay(
-                    Image(systemName: "qrcode")
-                        .resizable()
-                        .scaledToFit()
-                        .padding(30)
-                        .foregroundColor(.accentColor.opacity(0.3))
-                )
-                .frame(width: 200, height: 200)
                 .padding(.bottom, 20)
 
             // Address
@@ -694,5 +835,38 @@ extension Color {
             blue: Double(hex & 0xFF) / 255,
             opacity: alpha
         )
+    }
+}
+
+// MARK: - QR Code
+
+struct QRCodeView: View {
+    let content: String
+
+    var body: some View {
+        if let image = generateQR(from: content) {
+            Image(uiImage: image)
+                .interpolation(.none)
+                .resizable()
+                .scaledToFit()
+        } else {
+            Image(systemName: "qrcode")
+                .resizable()
+                .scaledToFit()
+                .padding(30)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private func generateQR(from string: String) -> UIImage? {
+        guard !string.isEmpty else { return nil }
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(string.utf8)
+        filter.correctionLevel = "M"
+        guard let output = filter.outputImage else { return nil }
+        let scale = 200.0 / output.extent.width
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        guard let cgImage = CIContext().createCGImage(scaled, from: scaled.extent) else { return nil }
+        return UIImage(cgImage: cgImage)
     }
 }

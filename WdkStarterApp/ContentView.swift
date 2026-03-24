@@ -11,6 +11,39 @@ enum Network: String {
     case btc, eth
 }
 
+// MARK: - Transaction Model
+
+struct PendingTx: Identifiable {
+    let id = UUID()
+    let network: Network
+    let toAddress: String
+    let amount: String
+    var status: TxStatus = .pending
+
+    enum TxStatus {
+        case pending
+        case completed(hash: String)
+        case failed(error: String)
+    }
+
+    var explorerURL: URL? {
+        guard case .completed(let hash) = status else { return nil }
+        if network == .eth {
+            return URL(string: "https://sepolia.etherscan.io/tx/\(hash)")
+        } else {
+            return URL(string: "https://blockbook.tbtc-1.zelcore.io/tx/\(hash)")
+        }
+    }
+
+    var statusLabel: String {
+        switch status {
+        case .pending: return "Pending..."
+        case .completed: return "Confirmed"
+        case .failed(let error): return "Failed: \(error)"
+        }
+    }
+}
+
 // MARK: - View Model
 
 @MainActor
@@ -35,6 +68,9 @@ class WalletViewModel: ObservableObject {
     @Published var sendNetwork: Network = .eth
     @Published var sendAddress: String = ""
     @Published var sendAmount: String = ""
+    @Published var pendingTransactions: [PendingTx] = []
+    @Published var quotedFeeEth: String?
+    @Published var quotedFeeBtc: String?
 
     // Receive
     @Published var receiveNetwork: Network = .eth
@@ -132,7 +168,8 @@ class WalletViewModel: ObservableObject {
             navigate(to: .home)
             isLoading = false
             statusText = ""
-            try? await fetchBalance()
+            await fetchBalance()
+            fetchFeeQuotes()
         }
     }
 
@@ -178,23 +215,29 @@ class WalletViewModel: ObservableObject {
             navigate(to: .home)
             isLoading = false
             statusText = ""
-            try? await fetchBalance()
+            await fetchBalance()
+            fetchFeeQuotes()
         }
     }
 
     // MARK: - Balance
 
-    func fetchBalance() async throws {
-        guard isWdkInitialized, let wdk = client else { return }
+    private var isRefreshingBalance = false
+
+    func fetchBalance() async {
+        guard isWdkInitialized, let wdk = client, !isRefreshingBalance else { return }
+        isRefreshingBalance = true
+        defer { isRefreshingBalance = false }
+
         do {
-            let balance = try await wdk.getBalance(network: "sepolia")
-            ethBalance = balance
+            let ethBal = try await wdk.getBalance(network: "sepolia")
+            ethBalance = ethBal
         } catch {
             print("ETH balance fetch failed: \(error)")
         }
         do {
-            let balance = try await wdk.getBalance(network: "bitcoin")
-            btcBalance = balance
+            let btcBal = try await wdk.getBalance(network: "bitcoin")
+            btcBalance = btcBal
         } catch {
             print("BTC balance fetch failed: \(error)")
         }
@@ -202,21 +245,141 @@ class WalletViewModel: ObservableObject {
 
     func refreshBalance() {
         Task {
-            try? await fetchBalance()
+            await fetchBalance()
         }
     }
 
-    // MARK: - Send (placeholder — wired for UI flow)
+    // MARK: - Fee Quotes
+
+    func fetchFeeQuotes() {
+        guard isWdkInitialized, let wdk = client else { return }
+        let zeroPadAddress = "0x0000000000000000000000000000000000000000"
+        let btcAddr = btcAddress.isEmpty ? "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx" : btcAddress
+
+        Task {
+            do {
+                let ethArgs = "{\"to\":\"\(zeroPadAddress)\",\"value\":\"1000\"}"
+                let ethResult = try await wdk.callMethod(
+                    methodName: "quoteSendTransaction",
+                    network: "sepolia",
+                    accountIndex: 0,
+                    args: ethArgs,
+                    options: nil
+                )
+                if let dict = ethResult as? [String: Any], let fee = dict["fee"] {
+                    quotedFeeEth = "\(fee)"
+                } else {
+                    quotedFeeEth = "\(ethResult)"
+                }
+            } catch {
+                print("ETH fee quote failed: \(error)")
+            }
+        }
+
+        Task {
+            do {
+                let btcArgs = "{\"to\":\"\(btcAddr)\",\"value\":\"1000\",\"confirmationTarget\":1}"
+                let btcResult = try await wdk.callMethod(
+                    methodName: "quoteSendTransaction",
+                    network: "bitcoin",
+                    accountIndex: 0,
+                    args: btcArgs,
+                    options: nil
+                )
+                if let dict = btcResult as? [String: Any], let fee = dict["fee"] {
+                    quotedFeeBtc = "\(fee)"
+                } else {
+                    quotedFeeBtc = "\(btcResult)"
+                }
+            } catch {
+                print("BTC fee quote failed: \(error)")
+            }
+        }
+    }
+
+    // MARK: - Send
+
+    private func toSmallestUnit(_ amount: String, decimals: Int) -> String? {
+        guard let decimal = Decimal(string: amount) else { return nil }
+        var multiplier = Decimal(1)
+        for _ in 0..<decimals { multiplier *= 10 }
+        let result = decimal * multiplier
+        return NSDecimalNumber(decimal: result).stringValue
+    }
+
+    private func extractTxHash(from result: Any) -> String {
+        if let dict = result as? [String: Any], let hash = dict["hash"] as? String {
+            return hash
+        }
+        let str = "\(result)"
+        if str.hasPrefix("0x") { return str }
+        if let data = str.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let hash = json["hash"] as? String {
+            return hash
+        }
+        return str
+    }
 
     func doSend() {
-        guard !sendAddress.isEmpty, !sendAmount.isEmpty else {
+        let address = sendAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        let amount = sendAmount.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty, !amount.isEmpty else {
             showToast("Please fill in address and amount")
             return
         }
-        // TODO: Wire to actual callMethod for sendTransaction
-        navigate(to: .home)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            self.showToast("Send not yet implemented — coming soon")
+        guard isWdkInitialized, let wdk = client else {
+            showToast("Wallet not initialized")
+            return
+        }
+
+        let decimals = sendNetwork == .eth ? 18 : 8
+        guard let valueInSmallestUnit = toSmallestUnit(amount, decimals: decimals) else {
+            showToast("Invalid amount")
+            return
+        }
+
+        let networkRpc = sendNetwork == .eth ? "sepolia" : "bitcoin"
+        let tx = PendingTx(network: sendNetwork, toAddress: address, amount: amount)
+        let txId = tx.id
+        pendingTransactions.append(tx)
+
+        sendAddress = ""
+        sendAmount = ""
+        showToast("Transaction submitted", success: true)
+
+        Task {
+            do {
+                let argsJson = "{\"to\":\"\(address)\",\"value\":\"\(valueInSmallestUnit)\"}"
+                let result = try await wdk.callMethod(
+                    methodName: "sendTransaction",
+                    network: networkRpc,
+                    accountIndex: 0,
+                    args: argsJson,
+                    options: nil
+                )
+                let hash = extractTxHash(from: result)
+                updateTx(id: txId, status: .completed(hash: hash))
+                showToast("Transaction confirmed!", success: true)
+                await fetchBalance()
+            } catch {
+                updateTx(id: txId, status: .failed(error: error.localizedDescription))
+                showToast("Send failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func updateTx(id: UUID, status: PendingTx.TxStatus) {
+        if let index = pendingTransactions.firstIndex(where: { $0.id == id }) {
+            pendingTransactions[index].status = status
+        }
+    }
+
+    func clearCompletedTransactions() {
+        pendingTransactions.removeAll { tx in
+            if case .completed = tx.status { return true }
+            if case .failed = tx.status { return true }
+            return false
         }
     }
 
@@ -328,6 +491,9 @@ class WalletViewModel: ObservableObject {
             importWords = Array(repeating: "", count: 12)
             importError = false
             signResult = nil
+            pendingTransactions.removeAll()
+            quotedFeeEth = nil
+            quotedFeeBtc = nil
             navigate(to: .welcome)
             showToast("Wallet deleted", success: false)
         }
@@ -361,7 +527,19 @@ class WalletViewModel: ObservableObject {
     }
 
     var sendFee: String {
-        sendNetwork == .eth ? "~0.002 ETH" : "~0.00001 BTC"
+        if sendNetwork == .eth {
+            guard let feeWei = quotedFeeEth, let wei = Decimal(string: feeWei) else {
+                return "Estimating..."
+            }
+            let eth = wei / 1_000_000_000_000_000_000
+            return "~\(NSDecimalNumber(decimal: eth)) ETH"
+        } else {
+            guard let feeSats = quotedFeeBtc, let sats = Decimal(string: feeSats) else {
+                return "Estimating..."
+            }
+            let btc = sats / 100_000_000
+            return "~\(NSDecimalNumber(decimal: btc)) BTC"
+        }
     }
 
     var sendNetworkLabel: String {
@@ -370,6 +548,26 @@ class WalletViewModel: ObservableObject {
 
     var sendTokenLabel: String {
         sendNetwork == .eth ? "ETH" : "BTC"
+    }
+
+    var maxSendAmount: String {
+        if sendNetwork == .eth {
+            guard let balance = Decimal(string: ethBalance),
+                  let feeStr = quotedFeeEth, let fee = Decimal(string: feeStr) else { return "0" }
+            let feeWithMargin = fee * Decimal(string: "1.2")!
+            let maxWei = balance - feeWithMargin
+            if maxWei <= 0 { return "0" }
+            let maxEth = maxWei / 1_000_000_000_000_000_000
+            return "\(NSDecimalNumber(decimal: maxEth))"
+        } else {
+            guard let balance = Decimal(string: btcBalance),
+                  let feeStr = quotedFeeBtc, let fee = Decimal(string: feeStr) else { return "0" }
+            let feeWithMargin = fee * Decimal(string: "1.2")!
+            let maxSats = balance - feeWithMargin
+            if maxSats <= 0 { return "0" }
+            let maxBtc = maxSats / 100_000_000
+            return "\(NSDecimalNumber(decimal: maxBtc))"
+        }
     }
 
     var formattedEthBalance: String {
