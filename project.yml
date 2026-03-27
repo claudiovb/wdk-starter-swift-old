@@ -16,8 +16,8 @@ include:
 
 packages:
   WdkSwiftCore:
-    url: https://github.com/claudiovb/wdk-swift-core
-    branch: v2
+    url: https://github.com/ohwhen/wdk-swift-core
+    branch: jsc
 
 targets:
   wdk-starter-swift:
