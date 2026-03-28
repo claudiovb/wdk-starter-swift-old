@@ -16,8 +16,8 @@ include:
 
 packages:
   WdkSwiftCore:
-    url: https://github.com/claudiovb/wdk-swift-core
-    branch: feat/continuation-for-async-processing
+    url: https://github.com/claudiovb/wdk-core-swift
+    branch: main
 
 targets:
   wdk-starter-swift:

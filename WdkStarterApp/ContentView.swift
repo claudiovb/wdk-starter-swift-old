@@ -90,9 +90,15 @@ class WalletViewModel: ObservableObject {
     {
       "networks": {
         "sepolia": {
-            "provider": "https://ethereum-sepolia-rpc.publicnode.com"
+            "blockchain": "ethereum",
+            "config": {
+            "chainId": 11155111,
+              "provider": "https://ethereum-sepolia.publicnode.com"
+            }
         },
         "bitcoin": {
+          "blockchain": "bitcoin",
+          "config": {
           "client": {
             "type": "blockbook-http",
             "clientConfig": {
@@ -100,6 +106,7 @@ class WalletViewModel: ObservableObject {
             }
           },
           "network": "testnet"
+          }
         }
       }
     }
